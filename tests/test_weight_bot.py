@@ -8,7 +8,7 @@ from datetime import date, datetime, timedelta
 import pytest
 from PIL import Image
 
-import waga
+import weight_bot
 
 OWNER = 100
 TODAY = date(2026, 11, 6)
@@ -40,9 +40,9 @@ class FakeApi:
 
 @pytest.fixture
 def bot(tmp_path):
-    clock = {"now": datetime(2026, 11, 6, 9, 0, tzinfo=waga.TZ)}
+    clock = {"now": datetime(2026, 11, 6, 9, 0, tzinfo=weight_bot.TZ)}
     api = FakeApi()
-    b = waga.Bot(waga.Store(tmp_path / "waga.db"), api, OWNER, now=lambda: clock["now"])
+    b = weight_bot.Bot(weight_bot.Store(tmp_path / "weight.db"), api, OWNER, now=lambda: clock["now"])
     b.fake, b.clock = api, clock
     return b
 
@@ -78,18 +78,18 @@ def fill(bot, values, end=TODAY):
     ("82,4 24.12", (82.4, date(2025, 12, 24))),  # a day that hasn't come this year means last year
 ])
 def test_reads_a_weight(typed, expected):
-    assert waga.parse_entry(typed, TODAY) == expected
+    assert weight_bot.parse_entry(typed, TODAY) == expected
 
 
 @pytest.mark.parametrize("typed", ["hej", "", "czesc 82", "82,4 kiedys tam"])
 def test_other_text_is_not_a_weight(typed):
-    assert waga.parse_entry(typed, TODAY) is None
+    assert weight_bot.parse_entry(typed, TODAY) is None
 
 
 @pytest.mark.parametrize("typed", ["8,24", "824", "0", "82,4 31.02", "82,4 2027-01-01"])
 def test_impossible_values_are_refused(typed):
-    with pytest.raises(waga.Invalid):
-        waga.parse_entry(typed, TODAY)
+    with pytest.raises(weight_bot.Invalid):
+        weight_bot.parse_entry(typed, TODAY)
 
 
 # --- BMI, trend, tempo ----------------------------------------------------------------------------
@@ -97,37 +97,38 @@ def test_impossible_values_are_refused(typed):
 @pytest.mark.parametrize("kg, name", [(55, "niedowaga"), (60, "norma"), (80.6, "norma"), (81, "nadwaga"),
                                       (97, "nadwaga"), (98, "otyłość")])
 def test_bmi_zones_at_180_cm(kg, name):
-    assert waga.zone(waga.bmi(kg, 180)).name == name
+    assert weight_bot.zone(weight_bot.bmi(kg, 180)).name == name
 
 
 def test_healthy_range_for_a_height():
-    assert waga.healthy_range(180) == (59.9, 80.7)
+    assert weight_bot.healthy_range(180) == (59.9, 80.7)
 
 
 def test_trend_is_the_mean_of_the_last_seven_days_not_seven_points():
     points = [(TODAY - timedelta(days=20), 90.0), (TODAY - timedelta(days=1), 80.0), (TODAY, 82.0)]
-    assert waga.trend(points) == [(points[0][0], 90.0), (points[1][0], 80.0), (TODAY, 81.0)]
+    assert weight_bot.trend(points) == [(points[0][0], 90.0), (points[1][0], 80.0), (TODAY, 81.0)]
 
 
 def test_tempo_needs_two_weeks_of_data():
-    assert waga.rate_per_week([(TODAY - timedelta(days=d), 80 + d * 0.1) for d in range(6, -1, -1)], TODAY) is None
+    short = [(TODAY - timedelta(days=d), 80 + d * 0.1) for d in range(6, -1, -1)]
+    assert weight_bot.rate_per_week(short, TODAY) is None
     steady = [(TODAY - timedelta(days=d), 80 + d * 0.1) for d in range(20, -1, -1)]  # losing 0.1 kg a day
-    assert waga.rate_per_week(steady, TODAY) == pytest.approx(-0.7)
+    assert weight_bot.rate_per_week(steady, TODAY) == pytest.approx(-0.7)
 
 
 def test_goal_date_only_when_heading_towards_it():
     falling = [(TODAY - timedelta(days=d), 80 + d * 0.1) for d in range(20, -1, -1)]
-    assert waga.goal_date(falling, 73, TODAY) == TODAY + timedelta(days=70)
-    assert waga.goal_date(falling, 85, TODAY) is None
-    assert waga.goal_date([(TODAY, 80.0)], 73, TODAY) is None
+    assert weight_bot.goal_date(falling, 73, TODAY) == TODAY + timedelta(days=70)
+    assert weight_bot.goal_date(falling, 85, TODAY) is None
+    assert weight_bot.goal_date([(TODAY, 80.0)], 73, TODAY) is None
 
 
 def test_sudden_jump_looks_like_a_typo_but_slow_change_does_not():
     points = [(TODAY - timedelta(days=1), 82.4)]
-    assert waga.suspicious(28.4, TODAY, points)
-    assert not waga.suspicious(83.0, TODAY, points)
-    assert not waga.suspicious(78.0, TODAY, [(TODAY - timedelta(days=60), 85.0)])  # two months apart: plausible
-    assert not waga.suspicious(28.4, TODAY, [])
+    assert weight_bot.suspicious(28.4, TODAY, points)
+    assert not weight_bot.suspicious(83.0, TODAY, points)
+    assert not weight_bot.suspicious(78.0, TODAY, [(TODAY - timedelta(days=60), 85.0)])  # two months apart: plausible
+    assert not weight_bot.suspicious(28.4, TODAY, [])
 
 
 # --- the daily flow -------------------------------------------------------------------------------
@@ -164,7 +165,7 @@ def test_date_is_when_it_was_sent_not_when_the_laptop_came_back(bot):
 
 
 def test_day_follows_the_local_clock_at_night(bot):
-    local_night = datetime(2026, 11, 6, 0, 30, tzinfo=waga.TZ)  # still 5 Nov in UTC
+    local_night = datetime(2026, 11, 6, 0, 30, tzinfo=weight_bot.TZ)  # still 5 Nov in UTC
     text(bot, "82,4", when=local_night)
     assert bot.store.points()[0][0] == TODAY
 
@@ -188,7 +189,7 @@ def test_range_buttons_redraw_the_same_message(bot):
     assert "• 90 d" in labels
     for row in json.loads(fields["reply_markup"])["inline_keyboard"]:
         for b in row:
-            assert waga.label_width(b["text"]) <= 42 // len(row) - 2, b["text"]
+            assert weight_bot.label_width(b["text"]) <= 42 // len(row) - 2, b["text"]
 
 
 def test_tapping_the_range_already_shown_does_not_ask_telegram_to_redraw(bot):
@@ -228,7 +229,7 @@ def test_menu_tiles_fit_a_phone_and_open_settings(bot):
     keyboard = json.loads(bot.fake.last("sendMessage")[1]["reply_markup"])["inline_keyboard"]
     for row in keyboard:
         for b in row:
-            assert waga.label_width(b["text"]) <= 42 // len(row) - 2, b["text"]
+            assert weight_bot.label_width(b["text"]) <= 42 // len(row) - 2, b["text"]
     tap(bot, "m:goal")
     assert "cel" in bot.fake.last("sendMessage")[1]["text"].lower()
     text(bot, "78")
@@ -263,8 +264,8 @@ def test_caption_shows_the_goal_and_its_date(bot):
     bot.store.set("goal", "73.0")
     for d in range(21):
         bot.store.put(TODAY - timedelta(days=d), 80 + d * 0.1)
-    assert "tempo −0,7 kg/tydz." in waga.caption(bot.store.points(), TODAY, None, 73.0, TODAY)
-    caption = waga.caption(bot.store.points(), TODAY, None, 73.0, TODAY)
+    assert "tempo −0,7 kg/tydz." in weight_bot.caption(bot.store.points(), TODAY, None, 73.0, TODAY)
+    caption = weight_bot.caption(bot.store.points(), TODAY, None, 73.0, TODAY)
     assert "zostało 7,0 kg" in caption and "15.01.2027" in caption
 
 
@@ -306,14 +307,14 @@ def test_no_weight_is_ever_printed_to_the_log(bot, capsys):
 def test_reminder_once_a_day_only_without_a_measurement(bot):
     text(bot, "/przypomnienie 8:30")
     before = bot.fake.count("sendMessage")
-    bot.clock["now"] = datetime(2026, 11, 6, 8, 0, tzinfo=waga.TZ)
+    bot.clock["now"] = datetime(2026, 11, 6, 8, 0, tzinfo=weight_bot.TZ)
     bot.tick()
     assert bot.fake.count("sendMessage") == before
-    bot.clock["now"] = datetime(2026, 11, 6, 8, 31, tzinfo=waga.TZ)
+    bot.clock["now"] = datetime(2026, 11, 6, 8, 31, tzinfo=weight_bot.TZ)
     bot.tick()
     bot.tick()
     assert bot.fake.count("sendMessage") == before + 1
-    bot.clock["now"] = datetime(2026, 11, 7, 9, 0, tzinfo=waga.TZ)
+    bot.clock["now"] = datetime(2026, 11, 7, 9, 0, tzinfo=weight_bot.TZ)
     text(bot, "82,4")
     sent = bot.fake.count("sendMessage")
     bot.tick()
@@ -330,10 +331,10 @@ def test_reminder_is_off_until_asked_for(bot):
 
 def test_sunday_evening_summary_with_a_copy_once_a_week(bot):
     fill(bot, [80.0 + i * 0.1 for i in range(14)], end=date(2026, 11, 8))
-    bot.clock["now"] = datetime(2026, 11, 8, 19, 0, tzinfo=waga.TZ)
+    bot.clock["now"] = datetime(2026, 11, 8, 19, 0, tzinfo=weight_bot.TZ)
     bot.tick()
     assert bot.fake.count("sendDocument") == 0
-    bot.clock["now"] = datetime(2026, 11, 8, 20, 5, tzinfo=waga.TZ)
+    bot.clock["now"] = datetime(2026, 11, 8, 20, 5, tzinfo=weight_bot.TZ)
     bot.tick()
     bot.tick()
     method, fields, files = bot.fake.last("sendDocument")
@@ -344,7 +345,7 @@ def test_sunday_evening_summary_with_a_copy_once_a_week(bot):
 
 
 def test_no_copy_without_data(bot):
-    bot.clock["now"] = datetime(2026, 11, 8, 21, 0, tzinfo=waga.TZ)
+    bot.clock["now"] = datetime(2026, 11, 8, 21, 0, tzinfo=weight_bot.TZ)
     bot.tick()
     assert bot.fake.calls == []
 
@@ -357,7 +358,7 @@ def test_csv_goes_out_and_comes_back(bot):
     bot.fake.downloads["f1"] = exported + b"nonsense,line\n2026-11-01,999\n"
     bot.handle_update({"message": {"message_id": 2, "date": int(bot.clock["now"].timestamp()), "from": {"id": OWNER},
                                    "chat": {"id": OWNER, "type": "private"},
-                                   "document": {"file_id": "f1", "file_name": "waga.csv", "file_size": 60}}})
+                                   "document": {"file_id": "f1", "file_name": "weight.csv", "file_size": 60}}})
     assert bot.store.points() == [(TODAY - timedelta(days=1), 80.0), (TODAY, 81.5)]
     said = bot.fake.last("sendMessage")[1]["text"]
     assert "2" in said and "pominięto 2" in said.lower()
@@ -375,24 +376,25 @@ def has_colour(image, colour):
 
 def test_chart_draws_the_bmi_bar_only_with_a_height():
     points = [(TODAY - timedelta(days=d), 82 - d * 0.1) for d in range(30)]
-    with_bar = picture(waga.render_chart(points, 30, 180, None, TODAY, TODAY))
-    without = picture(waga.render_chart(points, 30, None, None, TODAY, TODAY))
-    assert with_bar.size == without.size == (waga.WIDTH, waga.HEIGHT)
-    zone_colours = [z.colour for z in waga.ZONES]
+    with_bar = picture(weight_bot.render_chart(points, 30, 180, None, TODAY, TODAY))
+    without = picture(weight_bot.render_chart(points, 30, None, None, TODAY, TODAY))
+    assert with_bar.size == without.size == (weight_bot.WIDTH, weight_bot.HEIGHT)
+    zone_colours = [z.colour for z in weight_bot.ZONES]
     assert all(has_colour(with_bar, c) for c in zone_colours)
     assert not any(has_colour(without, c) for c in zone_colours)
 
 
 def test_chart_copes_with_one_point_flat_data_and_old_points():
-    picture(waga.render_chart([(TODAY, 82.4)], 30, 180, None, TODAY, TODAY))
-    picture(waga.render_chart([(TODAY, 82.0), (TODAY - timedelta(days=1), 82.0)], 14, 180, 78.0, TODAY, TODAY))
-    picture(waga.render_chart([(TODAY - timedelta(days=400), 82.0)], 14, None, None, TODAY, TODAY))
-    picture(waga.render_chart([(TODAY - timedelta(days=d), 200 - d) for d in range(150)], 0, 150, None, TODAY, TODAY))
+    picture(weight_bot.render_chart([(TODAY, 82.4)], 30, 180, None, TODAY, TODAY))
+    picture(weight_bot.render_chart([(TODAY, 82.0), (TODAY - timedelta(days=1), 82.0)], 14, 180, 78.0, TODAY, TODAY))
+    picture(weight_bot.render_chart([(TODAY - timedelta(days=400), 82.0)], 14, None, None, TODAY, TODAY))
+    heavy = [(TODAY - timedelta(days=d), 200 - d) for d in range(150)]
+    picture(weight_bot.render_chart(heavy, 0, 150, None, TODAY, TODAY))
 
 
 def test_highlighted_day_is_marked_on_the_chart():
     points = [(TODAY - timedelta(days=1), 80.0), (TODAY, 81.0)]
-    assert has_colour(picture(waga.render_chart(points, 30, None, None, TODAY, TODAY)), waga.HIGHLIGHT)
+    assert has_colour(picture(weight_bot.render_chart(points, 30, None, None, TODAY, TODAY)), weight_bot.HIGHLIGHT)
 
 
 # --- the real HTTP layer --------------------------------------------------------------------------
@@ -416,12 +418,12 @@ def test_telegram_call_sends_fields_and_a_file_and_hides_the_token_in_errors():
 
     server = http.server.HTTPServer(("127.0.0.1", 0), Handler)
     threading.Thread(target=server.serve_forever, daemon=True).start()
-    api = waga.Telegram("123:SECRET", base=f"http://127.0.0.1:{server.server_port}")
+    api = weight_bot.Telegram("123:SECRET", base=f"http://127.0.0.1:{server.server_port}")
     assert api("sendPhoto", {"chat_id": 5, "caption": "cześć"}, {"photo": b"\x89PNGdata"}) == {"x": 1}
     assert seen["path"] == "/bot123:SECRET/sendPhoto" and seen["type"].startswith("multipart/form-data")
     assert b'name="chat_id"\r\n\r\n5' in seen["body"] and "cześć".encode() in seen["body"]
     assert b'name="photo"; filename="photo.png"' in seen["body"] and b"\x89PNGdata" in seen["body"]
-    with pytest.raises(waga.TelegramError) as error:
+    with pytest.raises(weight_bot.TelegramError) as error:
         api("fail")
     assert "SECRET" not in str(error.value) and "nope" in str(error.value)
     server.shutdown()
@@ -441,25 +443,25 @@ def test_an_old_measurement_opens_a_range_that_shows_it(bot):
 
 def test_chart_starts_where_the_data_starts_and_never_magnifies_tiny_changes():
     points = [(TODAY - timedelta(days=1), 82.4), (TODAY, 82.5)]
-    assert waga.chart_window(points, 30, TODAY)[0] == TODAY - timedelta(days=6)  # not 30 empty days
+    assert weight_bot.chart_window(points, 30, TODAY)[0] == TODAY - timedelta(days=6)  # not 30 empty days
     long = [(TODAY - timedelta(days=d), 80.0) for d in range(100, -1, -1)]
-    assert waga.chart_window(long, 30, TODAY)[0] == TODAY - timedelta(days=29)
-    low, high = waga.value_scale([82.4, 82.5], None)
+    assert weight_bot.chart_window(long, 30, TODAY)[0] == TODAY - timedelta(days=29)
+    low, high = weight_bot.value_scale([82.4, 82.5], None)
     assert high - low >= 3 and low < 82.4 and high > 82.5
 
 
 def test_selftest_renders_a_chart_without_a_token(monkeypatch, capsys):
     monkeypatch.delenv("TG_TOKEN", raising=False)
-    assert waga.main(["--selftest"]) == 0
-    assert waga.VERSION in capsys.readouterr().out
+    assert weight_bot.main(["--selftest"]) == 0
+    assert weight_bot.VERSION in capsys.readouterr().out
 
 
 def test_selftest_fails_when_the_chart_cannot_be_drawn(monkeypatch):
     def broken(*args):
         raise OSError("no font")
 
-    monkeypatch.setattr(waga, "render_chart", broken)
-    assert waga.main(["--selftest"]) == 1
+    monkeypatch.setattr(weight_bot, "render_chart", broken)
+    assert weight_bot.main(["--selftest"]) == 1
 
 
 # --- the main loop -------------------------------------------------------------------------------------------
@@ -501,7 +503,7 @@ def test_a_broken_update_is_reported_once_and_the_bot_goes_on(bot, monkeypatch, 
 
     monkeypatch.setattr(bot, "send_chart", breaks_first)
     with pytest.raises(KeyboardInterrupt):
-        waga.run(api, bot)
+        weight_bot.run(api, bot)
     assert api.offsets == [None, 6, 7]  # never asks for the broken update again
     assert any("Coś nie wyszło" in said for said in api.texts()) and api.count("sendPhoto") == 1
     assert bot.store.points() == [(TODAY, 82.1)]
@@ -511,27 +513,28 @@ def test_a_broken_update_is_reported_once_and_the_bot_goes_on(bot, monkeypatch, 
 
 def test_a_network_failure_only_delays_the_bot(bot, monkeypatch):
     sleeps = []
-    monkeypatch.setattr(waga.time, "sleep", sleeps.append)
-    api = ScriptedApi([waga.TelegramError("getUpdates: URLError"), waga.TelegramError("getUpdates: URLError"),
-                       [message_update(1, "82,4", bot.clock["now"])]])
+    monkeypatch.setattr(weight_bot.time, "sleep", sleeps.append)
+    offline = weight_bot.TelegramError("getUpdates: URLError")
+    api = ScriptedApi([offline, offline, [message_update(1, "82,4", bot.clock["now"])]])
     bot.api = api
     with pytest.raises(KeyboardInterrupt):
-        waga.run(api, bot)
+        weight_bot.run(api, bot)
     assert sleeps == [5, 10] and bot.store.points() == [(TODAY, 82.4)]
 
 
 def test_whoami_prints_the_id_or_explains(capsys):
-    waga.whoami(ScriptedApi([[message_update(1, "hej", datetime(2026, 11, 6, tzinfo=waga.TZ))]]))
+    weight_bot.whoami(ScriptedApi([[message_update(1, "hej", datetime(2026, 11, 6, tzinfo=weight_bot.TZ))]]))
     assert capsys.readouterr().out.strip() == str(OWNER)
-    waga.whoami(ScriptedApi([waga.TelegramError("getUpdates: Unauthorized")]))
+    weight_bot.whoami(ScriptedApi([weight_bot.TelegramError("getUpdates: Unauthorized")]))
     assert "Unauthorized" in capsys.readouterr().out
 
 
 def test_chart_headline_shows_the_day_it_is_about():
     points = [(TODAY - timedelta(days=1), 80.0), (TODAY, 91.0)]
     header = (0, 0, 400, 80)
-    about_today = picture(waga.render_chart(points, 30, None, None, TODAY, TODAY)).crop(header)
-    about_yesterday = picture(waga.render_chart(points, 30, None, None, TODAY - timedelta(days=1), TODAY)).crop(header)
+    about_today = picture(weight_bot.render_chart(points, 30, None, None, TODAY, TODAY)).crop(header)
+    yesterday = TODAY - timedelta(days=1)
+    about_yesterday = picture(weight_bot.render_chart(points, 30, None, None, yesterday, TODAY)).crop(header)
     assert about_today.tobytes() != about_yesterday.tobytes()
 
 
@@ -545,14 +548,14 @@ def test_data_file_is_readable_only_by_its_owner(tmp_path, monkeypatch):
     import os
     import stat
 
-    db = tmp_path / "state" / "waga.db"
+    db = tmp_path / "state" / "weight.db"
     monkeypatch.setenv("TG_TOKEN", "1:x")
     monkeypatch.setenv("TG_OWNER_ID", "100")
-    monkeypatch.setenv("WAGA_DB", str(db))
-    monkeypatch.setattr(waga, "run", lambda api, bot: None)
+    monkeypatch.setenv("WEIGHT_DB", str(db))
+    monkeypatch.setattr(weight_bot, "run", lambda api, bot: None)
     before = os.umask(0o022)
     try:
-        waga.main([])
+        weight_bot.main([])
     finally:
         os.umask(before)
     assert stat.S_IMODE(db.stat().st_mode) & 0o077 == 0

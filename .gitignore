@@ -1,7 +1,7 @@
 # --- private data and secrets: NEVER commit ---
 .env
 *.env
-!deploy/waga.env.example
+!deploy/weight-bot.env.example
 *.db
 *.sqlite3
 *.csv

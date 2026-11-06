@@ -1,17 +1,17 @@
 [Unit]
-Description=Waga: prywatny bot z wykresem wagi
+Description=weight-bot: prywatny bot z wykresem wagi
 After=network-online.target
 Wants=network-online.target
 
 [Service]
-# Own throwaway user; only it can read /var/lib/waga-bot.
+# Own throwaway user; only it can read /var/lib/weight-bot.
 DynamicUser=yes
-StateDirectory=waga-bot
+StateDirectory=weight-bot
 StateDirectoryMode=0700
 UMask=0077
-EnvironmentFile=/etc/waga-bot.env
-Environment=WAGA_DB=/var/lib/waga-bot/waga.db
-ExecStart=/usr/bin/python3 /opt/waga-bot/waga.py
+EnvironmentFile=/etc/weight-bot.env
+Environment=WEIGHT_DB=/var/lib/weight-bot/weight.db
+ExecStart=/usr/bin/python3 /opt/weight-bot/weight_bot.py
 Restart=always
 RestartSec=10
 

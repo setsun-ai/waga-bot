@@ -5,10 +5,10 @@ Private Telegram bot: send your weight, get a chart back, with the trend and a B
 One file, standard library + Pillow. Answers only its owner, only in a private chat. Weights stay in one SQLite file;
 they go nowhere else and are never logged.
 
-  waga.py            run the bot (TG_TOKEN, TG_OWNER_ID, WAGA_DB)
-  waga.py --whoami   print the Telegram ID of whoever last wrote to the bot
-  waga.py --selftest draw a chart, without Telegram (the installer runs it)
-  waga.py --version
+  weight_bot.py            run the bot (TG_TOKEN, TG_OWNER_ID, WEIGHT_DB)
+  weight_bot.py --whoami   print the Telegram ID of whoever last wrote to the bot
+  weight_bot.py --selftest draw a chart, without Telegram (the installer runs it)
+  weight_bot.py --version
 """
 import csv
 import errno
@@ -30,7 +30,7 @@ from zoneinfo import ZoneInfo
 from PIL import Image, ImageDraw, ImageFont
 
 VERSION = "1.0.0"
-TZ = ZoneInfo(os.environ.get("WAGA_TZ", "Europe/Warsaw"))
+TZ = ZoneInfo(os.environ.get("WEIGHT_TZ", "Europe/Warsaw"))
 
 MIN_KG, MAX_KG = 30, 300
 MIN_CM, MAX_CM = 120, 230
@@ -409,7 +409,7 @@ class TelegramError(Exception):
 
 
 class Telegram:
-    FILE_NAMES = {"photo": "photo.png", "chart": "chart.png", "document": "waga.csv"}
+    FILE_NAMES = {"photo": "photo.png", "chart": "chart.png", "document": "weight.csv"}
 
     def __init__(self, token, base="https://api.telegram.org"):
         self.token, self.base = token, base
@@ -418,7 +418,7 @@ class Telegram:
         url = f"{self.base}/bot{self.token}/{method}"
         fields = {k: str(v) for k, v in (fields or {}).items()}
         if files:
-            boundary = "waga-" + os.urandom(8).hex()
+            boundary = "weight-" + os.urandom(8).hex()
             parts = [f'--{boundary}\r\nContent-Disposition: form-data; name="{k}"\r\n\r\n{v}\r\n'.encode()
                      for k, v in fields.items()]
             for name, data in files.items():
@@ -785,7 +785,7 @@ def whoami(api):
 def run(api, bot):
     api("setMyCommands", {"commands": json.dumps([{"command": "menu", "description": "Menu z kafelkami"},
                                                   {"command": "help", "description": "Jak to działa"}])})
-    log(f"waga-bot {VERSION} started")
+    log(f"weight-bot {VERSION} started")
     offset, failures = None, 0
     while True:
         try:
@@ -844,7 +844,7 @@ def main(argv):
         print("Brak TG_OWNER_ID (sprawdzisz go przez --whoami)", file=sys.stderr)
         return 2
     os.umask(0o077)
-    store = Store(os.environ.get("WAGA_DB", "waga.db"))
+    store = Store(os.environ.get("WEIGHT_DB", "weight.db"))
     try:
         run(api, Bot(store, api, int(owner)))
     except KeyboardInterrupt:

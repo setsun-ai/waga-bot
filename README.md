@@ -1,8 +1,8 @@
-# waga-bot
+# weight-bot
 
 Prywatny bot na Telegramie: wysyłasz wagę, a on odsyła wykres z trendem i paskiem BMI.
 
-Jeden plik (`waga.py`), biblioteka standardowa + Pillow. Odpowiada tylko właścicielowi, tylko na czacie prywatnym.
+Jeden plik (`weight_bot.py`), biblioteka standardowa + Pillow. Odpowiada tylko właścicielowi, tylko na czacie prywatnym.
 
 ## Jak się używa
 
@@ -31,21 +31,21 @@ BMI to ogólna skala WHO dla dorosłych: nie odróżnia mięśni od tłuszczu. B
 2. Pobierz kod na maszynę i uruchom instalator:
 
 ```bash
-git clone https://github.com/setsun-ai/waga-bot.git
+git clone https://github.com/setsun-ai/weight-bot.git
 ```
 
 ```bash
-sudo bash waga-bot/deploy/install.sh
+sudo bash weight-bot/deploy/install.sh
 ```
 
-Instalator pyta o token (nie pokazuje go na ekranie), rozpoznaje Twoje ID po wiadomości do bota i uruchamia usługę. Token trafia tylko do `/etc/waga-bot.env` (chmod 600). Aktualizacja to `git -C waga-bot pull` i ten sam instalator: dane i ustawienia zostają.
+Instalator pyta o token (nie pokazuje go na ekranie), rozpoznaje Twoje ID po wiadomości do bota i uruchamia usługę. Token trafia tylko do `/etc/weight-bot.env` (chmod 600). Aktualizacja to `git -C weight-bot pull` i ten sam instalator: dane i ustawienia zostają.
 
 Usługa ma limit 50% CPU i 200 MB RAM oraz niski priorytet, żeby nie przeszkadzać innym programom na tej maszynie.
 
 Stan usługi:
 
 ```bash
-systemctl status waga-bot
+systemctl status weight-bot
 ```
 
 ## Użycie AI
