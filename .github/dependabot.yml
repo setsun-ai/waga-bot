@@ -1,0 +1,11 @@
+# Weekly update PRs for Pillow and the GitHub Actions; CI runs on each one.
+version: 2
+updates:
+  - package-ecosystem: pip
+    directory: /
+    schedule:
+      interval: weekly
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly

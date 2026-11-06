@@ -28,17 +28,17 @@ BMI to ogólna skala WHO dla dorosłych: nie odróżnia mięśni od tłuszczu. B
 ## Instalacja (Ubuntu/Debian, systemd)
 
 1. W [@BotFather](https://t.me/BotFather) utwórz bota (`/newbot`).
-2. Skopiuj pliki na maszynę i uruchom instalator:
+2. Pobierz kod na maszynę i uruchom instalator:
 
 ```bash
-scp waga.py deploy/install.sh deploy/waga-bot.service UZYTKOWNIK@MASZYNA:/tmp/
+git clone https://github.com/setsun-ai/waga-bot.git
 ```
 
 ```bash
-ssh -t UZYTKOWNIK@MASZYNA sudo bash /tmp/install.sh
+sudo bash waga-bot/deploy/install.sh
 ```
 
-Instalator pyta o token (nie pokazuje go na ekranie), rozpoznaje Twoje ID po wiadomości do bota i uruchamia usługę. Token trafia tylko do `/etc/waga-bot.env` (chmod 600). Aktualizacja to te same dwie komendy: dane i ustawienia zostają.
+Instalator pyta o token (nie pokazuje go na ekranie), rozpoznaje Twoje ID po wiadomości do bota i uruchamia usługę. Token trafia tylko do `/etc/waga-bot.env` (chmod 600). Aktualizacja to `git -C waga-bot pull` i ten sam instalator: dane i ustawienia zostają.
 
 Usługa ma limit 50% CPU i 200 MB RAM oraz niski priorytet, żeby nie przeszkadzać innym programom na tej maszynie.
 
@@ -47,6 +47,10 @@ Stan usługi:
 ```bash
 systemctl status waga-bot
 ```
+
+## Użycie AI
+
+Kod i dokumentację napisano z pomocą AI (Claude Code). Założenia, wybór rozwiązań i weryfikacja należą do autora.
 
 ## Rozwój
 
@@ -59,3 +63,7 @@ python -m ruff check . && python -m pytest -q
 ```
 
 Testy nie łączą się z Telegramem. Działają na Pythonie 3.10–3.13 i Pillow od 9.0.
+
+## Licencja
+
+MIT.
