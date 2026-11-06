@@ -10,6 +10,7 @@ they go nowhere else and are never logged.
   weight_bot.py --selftest draw a chart, without Telegram (the installer runs it)
   weight_bot.py --version
 """
+import calendar
 import csv
 import errno
 import io
@@ -29,7 +30,7 @@ from zoneinfo import ZoneInfo
 
 from PIL import Image, ImageDraw, ImageFont
 
-VERSION = "1.0.0"
+VERSION = "1.1.0"
 TZ = ZoneInfo(os.environ.get("WEIGHT_TZ", "Europe/Warsaw"))
 
 MIN_KG, MAX_KG = 30, 300
@@ -456,14 +457,22 @@ def label_width(text):
 
 
 def keyboard(rows):
-    return json.dumps({"inline_keyboard": [[{"text": t, "callback_data": d} for t, d in row] for row in rows]})
+    return json.dumps({"inline_keyboard": [[{"text": t, "callback_data": d} for t, d in row] for row in rows if row]})
 
 
-MENU = keyboard([[("📈 Wykres", "m:chart"), ("📋 Ostatnie", "m:recent")],
-                 [("📏 Wzrost", "m:height"), ("🎯 Cel", "m:goal")],
-                 [("⏰ Przypomnienie", "m:remind"), ("💾 CSV", "m:csv")]])
+MENU = keyboard([[("⚖️ Dodaj pomiar", "m:add"), ("📈 Wykres", "m:chart")],
+                 [("📋 Ostatnie", "m:recent"), ("🎯 Cel", "m:goal")],
+                 [("📏 Wzrost", "m:height"), ("⏰ Przypomnienie", "m:remind")],
+                 [("💾 Kopia CSV", "m:csv"), ("❓ Pomoc", "m:help")]])
+MENU_TEXT = "⚖️ <b>Menu</b>\nWyślij wagę, np. 82,4, albo wybierz kafelek."
+BACK = [("↩️ Menu", "m:menu")]
+MONTHS = ("Styczeń", "Luty", "Marzec", "Kwiecień", "Maj", "Czerwiec", "Lipiec", "Sierpień", "Wrzesień", "Październik",
+          "Listopad", "Grudzień")
+PAGE = 7  # measurements on one screen of "Ostatnie"
+DAY_CHOICE_MINUTES = 10  # how long a typed number goes to the picked day, not to today
 HELP = ("⚖️ Wyślij wagę, np. <code>82,4</code>, a odeślę wykres.\n\n"
-        "<code>82,4 wczoraj</code>, <code>82,4 5.11</code> – pomiar z innego dnia\n"
+        "⚖️ Dodaj pomiar – inny dzień z kalendarza, waga przyciskami\n"
+        "<code>82,4 wczoraj</code>, <code>82,4 5.11</code> – to samo pisemnie\n"
         "Drugi pomiar tego samego dnia zastępuje pierwszy; edycja wiadomości też poprawia pomiar.\n\n"
         "/wzrost 180 – do BMI\n/cel 78 – cel (/cel off wyłącza)\n"
         "/przypomnienie 8:00 – gdy nie ma pomiaru (off wyłącza)\n"
@@ -480,6 +489,7 @@ class Bot:
         self.now = now or (lambda: datetime.now(TZ))
         self.waiting = None  # the setting the next plain message is an answer for
         self.shown_range = {}  # message id -> the range its chart shows (no redraw of what's already there)
+        self.day_choice = None  # (day, valid until, stepper's message id): where the next typed number goes
 
     # --- settings --------------------------------------------------------------------------------
 
@@ -496,6 +506,20 @@ class Bot:
         if markup:
             fields["reply_markup"] = markup
         return self.api("sendMessage", fields)
+
+    def show(self, message, text, markup=None):
+        """In place of the tapped message; a chart is a photo and can't become text, so there it's a new message."""
+        if "photo" in message:
+            return self.say(text, markup)
+        fields = {"chat_id": self.owner, "message_id": message.get("message_id"), "text": text, "parse_mode": "HTML"}
+        if markup:
+            fields["reply_markup"] = markup
+        try:
+            return self.api("editMessageText", fields)
+        except TelegramError as e:
+            if "not modified" not in str(e):  # a stepper already at its limit
+                raise
+            return None
 
     def set_setting(self, name, value):
         """Saves a setting from what was typed; a bad value is explained and the next message can retry."""
@@ -576,6 +600,83 @@ class Bot:
                 raise
         self.shown_range[message_id] = days
 
+    # --- screens of buttons ---------------------------------------------------------------------------
+
+    def picker_view(self, year=None, month=None):
+        """Quick days and a month's calendar: no future days, days with a measurement marked."""
+        today = self.now().date()
+        year, month = year or today.year, month or today.month
+        measured = {d for d, _ in self.store.points()}
+        quick = [(label, f"day:{(today - timedelta(days=back)).isoformat()}")
+                 for back, label in enumerate(("Dziś", "Wczoraj", "Przedwczoraj"))]
+        rows = [quick, [(name, "x") for name in ("Pn", "Wt", "Śr", "Cz", "Pt", "So", "Nd")]]
+        for week in calendar.monthcalendar(year, month):
+            row = []
+            for number in week:
+                day = date(year, month, number) if number else None
+                if day is None or day > today:
+                    row.append(("·", "x"))
+                    continue
+                label = f"[{number}]" if day == today else str(number)
+                row.append((label + ("•" if day in measured else ""), f"day:{day.isoformat()}"))
+            rows.append(row)
+        before = date(year, month, 1) - timedelta(days=1)
+        after = date(year, month, calendar.monthrange(year, month)[1]) + timedelta(days=1)
+        nav = [("◀ Poprzedni", f"cal:{before:%Y-%m}")]
+        if after <= today:
+            nav.append(("Następny ▶", f"cal:{after:%Y-%m}"))
+        return (f"📅 <b>{MONTHS[month - 1]} {year}</b>\nWybierz dzień pomiaru. • to dzień z zapisaną wagą.",
+                keyboard(rows + [nav, BACK]))
+
+    def stepper_view(self, day, tenths=None):
+        """The weight of one day set with buttons. Each button carries the value it leads to; nothing is saved yet."""
+        points = self.store.points()
+        saved = dict(points).get(day)
+        if tenths is None:
+            nearest = min(points, key=lambda p: abs((p[0] - day).days))[1] if points else 80.0
+            tenths = round(nearest * 10)  # a day that has a value is its own nearest
+        low, high = MIN_KG * 10, MAX_KG * 10
+
+        def step(label, change):
+            return label, f"st:{day.isoformat()}:{min(max(tenths + change, low), high)}"
+
+        kg = num(tenths / 10)
+        rows = [[step("−1", -10), step("−0,1", -1), step("+0,1", 1), step("+1", 10)],
+                [(f"✅ Zapisz {kg} kg", f"sv:{day.isoformat()}:{tenths}")]]
+        lower = [("🗑 Usuń", f"dx:{day.isoformat()}")] if saved else []
+        rows += [lower + [("📅 Zmień dzień", "m:add")], BACK]
+        note = f"Zapisane teraz: {num(saved)} kg\n" if saved else ""
+        text = f"⚖️ Pomiar z {day:%d.%m.%Y}\n<b>{kg} kg</b>\n{note}Ustaw przyciskami albo wpisz liczbę."
+        return text, keyboard(rows)
+
+    def recent_view(self, offset=0):
+        points = self.store.points()[::-1]
+        if not points:
+            return "Nie ma jeszcze pomiarów.", keyboard([[("⚖️ Dodaj pomiar", "m:add")], BACK])
+        rows = [[(f"{d:%d.%m.%Y} · {num(kg)} kg", f"day:{d.isoformat()}")] for d, kg in points[offset:offset + PAGE]]
+        pages = []
+        if offset:
+            pages.append(("Nowsze ▶", f"rec:{max(offset - PAGE, 0)}"))
+        if offset + PAGE < len(points):
+            pages.append(("◀ Starsze", f"rec:{offset + PAGE}"))
+        return "📋 <b>Ostatnie pomiary</b>\nStuknij, żeby poprawić lub usunąć.", keyboard(rows + [pages, BACK])
+
+    def open_day(self, message, day, tenths=None):
+        self.waiting = None
+        until = self.now() + timedelta(minutes=DAY_CHOICE_MINUTES)
+        self.day_choice = (day, until, message.get("message_id"))
+        self.show(message, *self.stepper_view(day, tenths))
+
+    def chosen_day(self):
+        """The picked day the next typed number belongs to, while the choice is fresh."""
+        if self.day_choice and self.now() >= self.day_choice[1]:
+            self.day_choice = None
+        return self.day_choice
+
+    def close_stepper(self, message_id):
+        self.day_choice = None
+        self.api("deleteMessage", {"chat_id": self.owner, "message_id": message_id})
+
     def latest_chart(self):
         points = self.store.points()
         if points:
@@ -616,11 +717,17 @@ class Bot:
     def handle_text(self, text, sent, edited):
         if text.startswith("/"):
             if not edited:
-                self.waiting = None
+                self.waiting = self.day_choice = None
                 self.handle_command(text, sent)
             return
         if self.waiting and not edited:
             self.set_setting(self.waiting, text)
+            return
+        choice = self.chosen_day()
+        number = parse_number(text)
+        if choice and number is not None and MIN_KG <= number <= MAX_KG and not edited:
+            self.close_stepper(choice[2])
+            self.measurement(round(number, 1), choice[0])
             return
         try:
             entry = parse_entry(text, sent)
@@ -628,6 +735,7 @@ class Bot:
             self.say(f"⚠️ {e}")
             return
         if entry:
+            self.day_choice = None
             self.measurement(*entry, edited=edited)
         elif not edited:
             self.say("Wyślij wagę, np. <code>82,4</code>, albo /menu.")
@@ -639,22 +747,22 @@ class Bot:
         settings = {"wzrost": "height", "cel": "goal", "przypomnienie": "remind"}
         if command == "start":
             if self.height():
-                self.say("⚖️ Wyślij wagę, np. 82,4, albo wybierz kafelek.", MENU)
+                self.say(MENU_TEXT, MENU)
             else:
                 self.waiting = "height"
                 self.say("⚖️ Cześć! Wyślesz wagę, a ja odeślę wykres z trendem i BMI.\n\n" + PROMPTS["height"])
         elif command == "menu":
-            self.say("⚖️ Menu", MENU)
+            self.say(MENU_TEXT, MENU)
         elif command == "help":
             self.say(HELP)
         elif command == "wykres":
             self.latest_chart()
         elif command == "ostatnie":
-            self.say(self.recent())
+            self.say(*self.recent_view())
         elif command == "csv":
             self.send_copy(self.now().date().strftime("💾 Kopia z %d.%m.%Y – odeślij ją, by przywrócić dane."))
         elif command == "waga":
-            self.handle_text(args, sent, False) if args else self.say("Np. /waga 82,4 5.11")
+            self.handle_text(args, sent, False) if args else self.say(*self.picker_view())
         elif command in settings:
             if args:
                 self.set_setting(settings[command], args)
@@ -665,10 +773,33 @@ class Bot:
             self.say(HELP)
 
     def handle_tap(self, query):
-        data, message_id = query.get("data", ""), query.get("message", {}).get("message_id")
+        data, message = query.get("data", ""), query.get("message", {})
+        message_id = message.get("message_id")
         self.api("answerCallbackQuery", {"callback_query_id": query["id"]})
         kind, _, rest = data.partition(":")
-        if kind == "r":
+        if kind == "x":  # a calendar cell or a day's name: nothing to do
+            return
+        if kind == "st":
+            day, tenths = rest.split(":")
+            self.open_day(message, date.fromisoformat(day), int(tenths))
+            return
+        self.day_choice = None  # any other button leaves the stepper
+        if kind == "day":
+            self.open_day(message, date.fromisoformat(rest))
+        elif kind == "cal":
+            year, month = rest.split("-")
+            self.show(message, *self.picker_view(int(year), int(month)))
+        elif kind == "rec":
+            self.show(message, *self.recent_view(int(rest)))
+        elif kind == "sv":
+            day, tenths = rest.split(":")
+            self.close_stepper(message_id)
+            self.save(int(tenths) / 10, date.fromisoformat(day))
+        elif kind == "dx":
+            day = date.fromisoformat(rest)
+            self.store.delete(day)
+            self.show(message, f"🗑 Usunięto pomiar z {day:%d.%m.%Y}.", keyboard([[("📋 Ostatnie", "m:recent")], BACK]))
+        elif kind == "r":
             days, day = rest.split(":")
             if self.shown_range.get(message_id) != int(days) and self.store.points():
                 self.redraw(message_id, int(days), self.visible_day(date.fromisoformat(day)))
@@ -682,7 +813,7 @@ class Bot:
             self.api("deleteMessage", {"chat_id": self.owner, "message_id": message_id})
         elif kind == "m":
             self.waiting = None
-            self.handle_menu(rest)
+            self.handle_menu(rest, message)
 
     def visible_day(self, day):
         """The day a chart was about, or the latest one if it has been deleted since."""
@@ -699,25 +830,23 @@ class Bot:
             self.api("deleteMessage", {"chat_id": self.owner, "message_id": message_id})
             self.say(note)
 
-    def handle_menu(self, name):
+    def handle_menu(self, name, message):
         if name == "chart":
             self.latest_chart()
         elif name == "recent":
-            self.say(self.recent())
+            self.show(message, *self.recent_view())
+        elif name == "add":
+            self.show(message, *self.picker_view())
         elif name == "csv":
             self.handle_command("/csv", self.now().date())
+        elif name == "help":
+            self.show(message, HELP, keyboard([BACK]))
         elif name == "menu":
-            self.say("⚖️ Menu", MENU)
+            self.show(message, MENU_TEXT, MENU)
         elif name in PROMPTS:
             self.waiting = name
             current = {"height": self.height(), "goal": self.goal(), "remind": self.store.get("remind")}[name]
-            self.say(PROMPTS[name] + (f"\nTeraz: {current}" if current else ""))
-
-    def recent(self):
-        points = self.store.points()[-10:][::-1]
-        if not points:
-            return "Nie ma jeszcze pomiarów."
-        return "<pre>" + "\n".join(f"{d:%d.%m.%Y}  {num(kg):>5} kg" for d, kg in points) + "</pre>"
+            self.show(message, PROMPTS[name] + (f"\nTeraz: {current}" if current else ""), keyboard([BACK]))
 
     def send_copy(self, text, silent=False):
         points = self.store.points()

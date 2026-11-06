@@ -7,10 +7,12 @@ Jeden plik (`weight_bot.py`), biblioteka standardowa + Pillow. Odpowiada tylko w
 ## Jak się używa
 
 - `82,4` – dzisiejszy pomiar. Działa też `82.4`, `82,4 kg`, `82,4 wczoraj`, `82,4 5.11`, `82,4 2026-11-05`.
+- `/menu` → **⚖️ Dodaj pomiar** – bez pisania daty: Dziś, Wczoraj, Przedwczoraj albo kalendarz (• oznacza dzień z pomiarem), a wagę ustawiasz przyciskami `−1`, `−0,1`, `+0,1`, `+1` albo wpisujesz liczbę. Wybrany dzień czeka na liczbę 10 minut, potem wpisana liczba znowu oznacza dziś.
+- **📋 Ostatnie** – lista pomiarów; stuknięcie otwiera poprawianie i usuwanie.
 - Drugi pomiar tego samego dnia zastępuje pierwszy. Edycja wiadomości też poprawia pomiar.
 - Duży skok (literówka?) bot najpierw potwierdza przyciskiem.
 - Pod wykresem: zakres (14 d, 30 d, 90 d, rok, całość) i usunięcie pomiaru.
-- `/menu` – kafelki. Komendy: `/wzrost 180`, `/cel 78`, `/przypomnienie 8:00` (`off` wyłącza), `/wykres`, `/ostatnie`, `/csv`, `/waga 82,4 5.11`, `/help`.
+- `/menu` – wszystko jako kafelki, otwierają się w miejscu z ↩️ Menu. Komendy dalej działają: `/wzrost 180`, `/cel 78`, `/przypomnienie 8:00` (`off` wyłącza), `/wykres`, `/ostatnie`, `/csv`, `/waga`, `/help`.
 
 W niedzielę wieczorem bot wysyła podsumowanie tygodnia z kopią danych w CSV. Odesłanie tego pliku przywraca dane.
 

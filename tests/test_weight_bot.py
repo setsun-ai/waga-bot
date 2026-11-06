@@ -54,9 +54,11 @@ def text(bot, value, uid=OWNER, chat=None, when=None, edited=False):
     bot.handle_update({"edited_message" if edited else "message": message})
 
 
-def tap(bot, data, uid=OWNER):
-    bot.handle_update({"callback_query": {"id": "q", "data": data, "from": {"id": uid},
-                                          "message": {"message_id": 7, "chat": {"id": uid, "type": "private"}}}})
+def tap(bot, data, uid=OWNER, photo=False):
+    message = {"message_id": 7, "chat": {"id": uid, "type": "private"}}
+    if photo:
+        message["photo"] = [{"file_id": "p"}]
+    bot.handle_update({"callback_query": {"id": "q", "data": data, "from": {"id": uid}, "message": message}})
 
 
 def buttons(call):
@@ -231,7 +233,7 @@ def test_menu_tiles_fit_a_phone_and_open_settings(bot):
         for b in row:
             assert weight_bot.label_width(b["text"]) <= 42 // len(row) - 2, b["text"]
     tap(bot, "m:goal")
-    assert "cel" in bot.fake.last("sendMessage")[1]["text"].lower()
+    assert "cel" in bot.fake.last("editMessageText")[1]["text"].lower()
     text(bot, "78")
     assert bot.store.get("goal") == "78.0" and bot.store.points() == []
 
@@ -277,8 +279,9 @@ def test_waga_command_adds_a_past_measurement(bot):
 def test_recent_list(bot):
     fill(bot, [80.0, 81.5])
     text(bot, "/ostatnie")
-    said = bot.fake.last("sendMessage")[1]["text"]
-    assert "06.11" in said and "81,5" in said and said.index("06.11") < said.index("05.11")
+    labels = [b["text"] for row in json.loads(bot.fake.last("sendMessage")[1]["reply_markup"])["inline_keyboard"]
+              for b in row]
+    assert labels[0].startswith("06.11") and "81,5" in labels[0] and labels[1].startswith("05.11")
 
 
 # --- only the owner, only in private --------------------------------------------------------------
@@ -559,3 +562,171 @@ def test_data_file_is_readable_only_by_its_owner(tmp_path, monkeypatch):
     finally:
         os.umask(before)
     assert stat.S_IMODE(db.stat().st_mode) & 0o077 == 0
+
+
+# --- tiles, the day picker and the stepper ----------------------------------------------------
+
+def assert_fits(call):
+    for row in json.loads(call[1]["reply_markup"])["inline_keyboard"]:
+        for b in row:
+            assert weight_bot.label_width(b["text"]) <= 42 // len(row) - 2, b["text"]
+
+
+def test_menu_has_every_action_as_a_tile_and_tiles_open_in_place(bot):
+    text(bot, "/menu")
+    assert buttons(bot.fake.last("sendMessage")) == ["m:add", "m:chart", "m:recent", "m:goal", "m:height", "m:remind",
+                                                     "m:csv", "m:help"]
+    tap(bot, "m:help")
+    edit = bot.fake.last("editMessageText")
+    assert "82,4" in edit[1]["text"] and buttons(edit) == ["m:menu"] and edit[1]["message_id"] == 7
+    tap(bot, "m:menu")
+    assert buttons(bot.fake.last("editMessageText"))[0] == "m:add"
+
+
+def test_a_chart_is_a_photo_so_its_menu_button_sends_a_new_message(bot):
+    sent = bot.fake.count("sendMessage")
+    tap(bot, "m:menu", photo=True)
+    assert bot.fake.count("sendMessage") == sent + 1 and bot.fake.count("editMessageText") == 0
+
+
+def test_day_picker_offers_quick_days_and_a_calendar_without_the_future(bot):
+    fill(bot, [80.0], end=date(2026, 11, 3))
+    tap(bot, "m:add")
+    edit = bot.fake.last("editMessageText")
+    assert_fits(edit)
+    data = buttons(edit)
+    assert data[:3] == ["day:2026-11-06", "day:2026-11-05", "day:2026-11-04"]
+    assert "day:2026-11-01" in data and "day:2026-11-06" in data
+    assert not any(d.startswith("day:2026-11-07") or d == "day:2026-11-30" for d in data)  # the future
+    assert "cal:2026-10" in data and not any(d.startswith("cal:2026-12") for d in data)  # no month ahead
+    labels = [b["text"] for row in json.loads(edit[1]["reply_markup"])["inline_keyboard"] for b in row]
+    assert "3•" in labels and "listopad 2026" in edit[1]["text"].lower()  # days with a measurement are marked
+
+
+def test_day_picker_goes_back_through_months_and_years(bot):
+    tap(bot, "cal:2026-01")
+    edit = bot.fake.last("editMessageText")
+    assert_fits(edit)
+    assert "styczeń 2026" in edit[1]["text"].lower() and "day:2026-01-31" in buttons(edit)
+    assert "cal:2025-12" in buttons(edit) and "cal:2026-02" in buttons(edit)
+
+
+def test_stepper_starts_from_the_nearest_measurement_and_changes_nothing_until_saved(bot):
+    fill(bot, [82.4], end=date(2026, 11, 2))
+    bot.store.put(date(2026, 10, 1), 90.0)
+    tap(bot, "day:2026-11-04")
+    edit = bot.fake.last("editMessageText")
+    assert_fits(edit)
+    assert "04.11.2026" in edit[1]["text"] and "82,4 kg" in edit[1]["text"]
+    assert buttons(edit)[:5] == ["st:2026-11-04:814", "st:2026-11-04:823", "st:2026-11-04:825", "st:2026-11-04:834",
+                                 "sv:2026-11-04:824"]
+    tap(bot, "st:2026-11-04:825")
+    assert "82,5 kg" in bot.fake.last("editMessageText")[1]["text"]
+    assert len(bot.store.points()) == 2
+
+
+def test_saving_from_the_stepper_stores_that_day_and_answers_with_its_chart(bot):
+    tap(bot, "day:2026-11-04")
+    tap(bot, "sv:2026-11-04:825")
+    assert bot.store.points() == [(date(2026, 11, 4), 82.5)]
+    assert "04.11.2026" in bot.fake.last("sendPhoto")[1]["caption"] and bot.fake.count("deleteMessage") == 1
+
+
+def test_stepper_stays_within_possible_weights(bot):
+    tap(bot, f"st:2026-11-04:{weight_bot.MAX_KG * 10}")
+    assert f"st:2026-11-04:{weight_bot.MAX_KG * 10}" in buttons(bot.fake.last("editMessageText"))[:4]
+    assert f"st:2026-11-04:{weight_bot.MAX_KG * 10 + 1}" not in buttons(bot.fake.last("editMessageText"))
+
+
+def test_a_number_typed_after_picking_a_day_goes_to_that_day_then_back_to_today(bot):
+    tap(bot, "day:2026-11-04")
+    text(bot, "82,4")
+    assert bot.store.points() == [(date(2026, 11, 4), 82.4)] and bot.fake.count("deleteMessage") == 1
+    text(bot, "82,2")
+    assert bot.store.points()[-1] == (TODAY, 82.2)
+
+
+def test_a_forgotten_day_choice_expires_so_tomorrows_weight_lands_on_tomorrow(bot):
+    tap(bot, "day:2026-11-04")
+    bot.clock["now"] += timedelta(minutes=11)
+    text(bot, "82,4")
+    assert bot.store.points() == [(TODAY, 82.4)]
+
+
+def test_a_date_typed_with_the_number_beats_the_picked_day_and_a_command_cancels_it(bot):
+    tap(bot, "day:2026-11-04")
+    text(bot, "82,4 wczoraj")
+    assert bot.store.points() == [(date(2026, 11, 5), 82.4)]
+    tap(bot, "day:2026-11-04")
+    text(bot, "/menu")
+    text(bot, "82,1")
+    assert bot.store.points()[-1] == (TODAY, 82.1)
+
+
+def test_recent_tiles_open_the_stepper_with_delete(bot):
+    fill(bot, [80.0, 81.5])
+    tap(bot, "m:recent")
+    edit = bot.fake.last("editMessageText")
+    assert_fits(edit)
+    assert buttons(edit)[:2] == ["day:2026-11-06", "day:2026-11-05"]
+    tap(bot, "day:2026-11-05")
+    edit = bot.fake.last("editMessageText")
+    assert "80,0 kg" in edit[1]["text"] and "dx:2026-11-05" in buttons(edit)
+    tap(bot, "dx:2026-11-05")
+    assert bot.store.points() == [(TODAY, 81.5)] and "Usunięto" in bot.fake.last("editMessageText")[1]["text"]
+
+
+def test_a_day_without_a_measurement_has_nothing_to_delete(bot):
+    tap(bot, "day:2026-11-04")
+    assert not any(d.startswith("dx:") for d in buttons(bot.fake.last("editMessageText")))
+
+
+def test_recent_tiles_page_through_older_measurements(bot):
+    fill(bot, [80.0 + i / 10 for i in range(10)])
+    tap(bot, "m:recent")
+    first = buttons(bot.fake.last("editMessageText"))
+    assert "rec:7" in first and first.count("rec:0") == 0
+    tap(bot, "rec:7")
+    second = buttons(bot.fake.last("editMessageText"))
+    assert "day:2026-10-28" in second and "rec:0" in second and "rec:14" not in second
+
+
+def test_waga_alone_opens_the_day_picker(bot):
+    text(bot, "/waga")
+    assert buttons(bot.fake.last("sendMessage"))[0] == "day:2026-11-06"
+
+
+def test_a_keyboard_never_has_an_empty_row(bot):
+    fill(bot, [80.0, 81.5])  # fits one screen: no older or newer page
+    tap(bot, "m:recent")
+    rows = json.loads(bot.fake.last("editMessageText")[1]["reply_markup"])["inline_keyboard"]
+    assert all(rows)
+
+
+def test_typing_a_date_ends_the_day_choice(bot):
+    tap(bot, "day:2026-11-04")
+    text(bot, "82,4 wczoraj")
+    text(bot, "82,2")
+    assert bot.store.points()[-1] == (TODAY, 82.2) and (date(2026, 11, 4), 82.2) not in bot.store.points()
+
+
+def test_leaving_the_stepper_by_a_button_ends_the_day_choice(bot):
+    tap(bot, "day:2026-11-04")
+    tap(bot, "m:menu")
+    text(bot, "82,1")
+    assert bot.store.points() == [(TODAY, 82.1)]
+
+
+def test_telegram_saying_not_modified_is_not_an_error_but_others_are(bot):
+    def answers(error):
+        def api(method, fields=None, files=None):
+            if method == "editMessageText":
+                raise weight_bot.TelegramError(error)
+            return {}
+        return api
+
+    bot.api = answers("editMessageText: Bad Request: message is not modified")
+    tap(bot, "st:2026-11-04:3000")  # + at the top of the range changes nothing
+    bot.api = answers("editMessageText: Forbidden")
+    with pytest.raises(weight_bot.TelegramError):
+        tap(bot, "st:2026-11-04:3000")
