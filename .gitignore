@@ -1,0 +1,14 @@
+# --- private data and secrets: NEVER commit ---
+.env
+*.env
+!deploy/waga.env.example
+*.db
+*.sqlite3
+*.csv
+
+# --- Python ---
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
