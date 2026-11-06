@@ -38,12 +38,36 @@ class FakeApi:
         return [c[1].get("text") or c[1].get("caption") or "" for c in self.calls]
 
 
+class FakeUpdater:
+    """The update mechanism as the bot sees it; the real one has its own tests below."""
+
+    def __init__(self):
+        self.tag = "v" + weight_bot.VERSION
+        self.can_roll_back = False
+        self.installed, self.rolled_back, self.failure, self.checks = [], 0, None, 0
+
+    def latest(self):
+        self.checks += 1
+        if self.failure:
+            raise self.failure
+        return self.tag
+
+    def install(self, tag):
+        if self.failure:
+            raise self.failure
+        self.installed.append(tag)
+
+    def rollback(self):
+        self.rolled_back += 1
+
+
 @pytest.fixture
 def bot(tmp_path):
     clock = {"now": datetime(2026, 11, 6, 9, 0, tzinfo=weight_bot.TZ)}
     api = FakeApi()
-    b = weight_bot.Bot(weight_bot.Store(tmp_path / "weight.db"), api, OWNER, now=lambda: clock["now"])
-    b.fake, b.clock = api, clock
+    updater = FakeUpdater()
+    b = weight_bot.Bot(weight_bot.Store(tmp_path / "weight.db"), api, OWNER, updater, now=lambda: clock["now"])
+    b.fake, b.clock, b.fake_updater = api, clock, updater
     return b
 
 
@@ -575,7 +599,7 @@ def assert_fits(call):
 def test_menu_has_every_action_as_a_tile_and_tiles_open_in_place(bot):
     text(bot, "/menu")
     assert buttons(bot.fake.last("sendMessage")) == ["m:add", "m:chart", "m:recent", "m:goal", "m:height", "m:remind",
-                                                     "m:csv", "m:help"]
+                                                     "m:csv", "m:help", "m:update"]
     tap(bot, "m:help")
     edit = bot.fake.last("editMessageText")
     assert "82,4" in edit[1]["text"] and buttons(edit) == ["m:menu"] and edit[1]["message_id"] == 7
@@ -730,3 +754,195 @@ def test_telegram_saying_not_modified_is_not_an_error_but_others_are(bot):
     bot.api = answers("editMessageText: Forbidden")
     with pytest.raises(weight_bot.TelegramError):
         tap(bot, "st:2026-11-04:3000")
+
+
+# --- updating itself from Telegram -----------------------------------------------------------
+
+def newer(version=None):
+    major, minor, patch = weight_bot.version_tuple(weight_bot.VERSION)
+    return version or f"v{major}.{minor}.{patch + 1}"
+
+
+def test_update_tile_offers_a_newer_version_and_installs_it(bot):
+    bot.fake_updater.tag = newer()
+    tap(bot, "m:update")
+    edit = bot.fake.last("editMessageText")
+    assert_fits(edit)
+    assert weight_bot.VERSION in edit[1]["text"] and newer()[1:] in edit[1]["text"]
+    assert f"up:{newer()}" in buttons(edit) and "rb" not in buttons(edit)
+    tap(bot, f"up:{newer()}")
+    assert bot.fake_updater.installed == [newer()] and bot.restart
+    assert bot.store.get("updated_from") == weight_bot.VERSION
+
+
+def test_update_tile_says_when_there_is_nothing_new(bot):
+    tap(bot, "m:update")
+    edit = bot.fake.last("editMessageText")
+    assert "najnowsz" in edit[1]["text"] and not any(d.startswith("up:") for d in buttons(edit))
+
+
+def test_failed_update_changes_nothing_and_says_why(bot):
+    bot.fake_updater.tag = newer()
+    bot.fake_updater.failure = weight_bot.UpdateError("selftest nie przeszedł")
+    tap(bot, f"up:{newer()}")
+    assert not bot.restart and bot.store.get("updated_from") is None
+    assert "selftest nie przeszedł" in bot.fake.last("editMessageText")[1]["text"]
+
+
+def test_no_connection_to_github_is_explained_on_the_tile(bot):
+    bot.fake_updater.failure = weight_bot.UpdateError("brak połączenia z GitHubem")
+    tap(bot, "m:update")
+    assert "brak połączenia" in bot.fake.last("editMessageText")[1]["text"]
+
+
+def test_rollback_is_offered_only_when_possible_and_restarts(bot):
+    bot.fake_updater.can_roll_back = True
+    tap(bot, "m:update")
+    assert "rb" in buttons(bot.fake.last("editMessageText"))
+    tap(bot, "rb")
+    assert bot.fake_updater.rolled_back == 1 and bot.restart
+
+
+def test_typed_update_and_rollback_commands(bot):
+    bot.fake_updater.tag = newer()
+    text(bot, "/update")
+    assert bot.fake_updater.installed == [newer()] and bot.restart
+    bot.restart = False
+    text(bot, "/rollback")
+    assert bot.fake_updater.rolled_back == 0 and "Nie ma" in bot.fake.texts()[-1]
+
+
+def test_a_new_version_is_announced_once_with_a_button(bot):
+    bot.fake_updater.tag = newer()
+    bot.tick()
+    bot.tick()
+    assert bot.fake.count("sendMessage") == 1 and bot.fake_updater.checks == 1  # once a day, not every poll
+    assert f"up:{newer()}" in buttons(bot.fake.last("sendMessage"))
+    bot.clock["now"] += timedelta(days=1)
+    bot.tick()
+    assert bot.fake.count("sendMessage") == 1 and bot.fake_updater.checks == 2  # the same version: no second message
+    bot.fake_updater.tag = newer("v99.0.0")
+    bot.clock["now"] += timedelta(days=1)
+    bot.tick()
+    assert bot.fake.count("sendMessage") == 2
+
+
+def test_daily_check_failing_stays_quiet(bot):
+    bot.fake_updater.failure = weight_bot.UpdateError("brak połączenia")
+    bot.tick()
+    assert bot.fake.calls == []
+
+
+def test_after_restart_the_bot_says_what_changed(bot):
+    bot.store.set("updated_from", "1.0.0")
+    bot.announce_update()
+    assert "1.0.0" in bot.fake.texts()[-1] and weight_bot.VERSION in bot.fake.texts()[-1]
+    calls = len(bot.fake.calls)
+    bot.announce_update()
+    assert len(bot.fake.calls) == calls
+
+
+def test_restart_confirms_received_updates_first_so_it_does_not_install_twice(bot):
+    bot.fake_updater.tag = newer()
+    moment = bot.clock["now"]
+    message = message_update(5, "/update", moment)
+    api = ScriptedApi([[message], []])
+    bot.api = api
+    with pytest.raises(SystemExit):
+        weight_bot.run(api, bot)
+    assert api.offsets[-1] == 6 and bot.fake_updater.installed == [newer()]
+
+
+# --- the real mechanism: files, selftest, starting the newest copy ------------------------------
+
+SOURCE = open(weight_bot.__file__, encoding="utf-8").read()
+
+
+def source_of(version):
+    return SOURCE.replace(f'VERSION = "{weight_bot.VERSION}"', f'VERSION = "{version}"').encode()
+
+
+def real_updater(tmp_path, responses):
+    def fetch(url):
+        for fragment, body in responses.items():
+            if fragment in url:
+                return body
+        raise weight_bot.UpdateError("brak połączenia z GitHubem")
+
+    return weight_bot.Updater(tmp_path / "update", fetch)
+
+
+def test_latest_reads_the_release_tag(tmp_path):
+    updater = real_updater(tmp_path, {"releases/latest": b'{"tag_name": "v1.2.3"}'})
+    assert updater.latest() == "v1.2.3"
+    for bad in (b'{"tag_name": "../../evil"}', b"not json", b"{}"):
+        with pytest.raises(weight_bot.UpdateError):
+            real_updater(tmp_path, {"releases/latest": bad}).latest()
+
+
+def test_install_runs_the_selftest_then_puts_the_copy_in_place(tmp_path):
+    updater = real_updater(tmp_path, {"/v9.9.9/weight_bot.py": source_of("9.9.9")})
+    updater.install("v9.9.9")
+    assert (tmp_path / "update" / "weight_bot.py").read_bytes() == source_of("9.9.9")
+    assert updater.can_roll_back
+
+
+def test_a_broken_or_wrong_download_is_refused_and_leaves_the_old_copy(tmp_path):
+    good = real_updater(tmp_path, {"/v9.9.9/weight_bot.py": source_of("9.9.9")})
+    good.install("v9.9.9")
+    crashes = b'VERSION = "9.9.10"\nimport does_not_exist_anywhere\n'  # the right number, but it can't even start
+    for body in (crashes, b"", source_of("9.9.8")):
+        updater = real_updater(tmp_path, {"/v9.9.10/weight_bot.py": body})
+        with pytest.raises(weight_bot.UpdateError):
+            updater.install("v9.9.10")
+        assert (tmp_path / "update" / "weight_bot.py").read_bytes() == source_of("9.9.9")
+    assert not (tmp_path / "update" / "weight_bot.py.new").exists()
+
+
+def test_rollback_goes_one_step_back_then_to_the_installed_version(tmp_path):
+    updater = real_updater(tmp_path, {"/v9.9.9/": source_of("9.9.9"), "/v9.9.10/": source_of("9.9.10")})
+    updater.install("v9.9.9")
+    updater.install("v9.9.10")
+    updater.rollback()
+    assert (tmp_path / "update" / "weight_bot.py").read_bytes() == source_of("9.9.9")
+    updater.rollback()
+    assert not (tmp_path / "update" / "weight_bot.py").exists() and not updater.can_roll_back
+    with pytest.raises(weight_bot.UpdateError):
+        updater.rollback()
+
+
+def start_main(tmp_path, monkeypatch):
+    started, ran = [], []
+    monkeypatch.setenv("TG_TOKEN", "1:x")
+    monkeypatch.setenv("TG_OWNER_ID", "100")
+    monkeypatch.setenv("WEIGHT_DB", str(tmp_path / "weight.db"))
+    monkeypatch.setattr(weight_bot.os, "execv", lambda path, args: started.append(args[1]))
+    monkeypatch.setattr(weight_bot, "run", lambda api, bot: ran.append(True))
+    weight_bot.main([])
+    return started, ran
+
+
+def test_start_prefers_a_newer_downloaded_copy(tmp_path, monkeypatch):
+    copy = tmp_path / "update" / "weight_bot.py"
+    copy.parent.mkdir()
+    copy.write_bytes(source_of("99.0.0"))
+    started, _ = start_main(tmp_path, monkeypatch)
+    assert started == [str(copy)]
+
+
+@pytest.mark.parametrize("version", [weight_bot.VERSION, "0.0.1"])
+def test_start_ignores_a_copy_that_is_not_newer(tmp_path, monkeypatch, version):
+    copy = tmp_path / "update" / "weight_bot.py"  # the running copy itself, or an older one left after an install
+    copy.parent.mkdir()
+    copy.write_bytes(source_of(version))
+    started, ran = start_main(tmp_path, monkeypatch)
+    assert started == [] and ran == [True]
+
+
+def test_version_compares_as_numbers_not_text():
+    assert weight_bot.version_tuple("v1.10.0") > weight_bot.version_tuple("1.9.0")
+
+
+def test_typed_update_when_already_newest_installs_nothing(bot):
+    text(bot, "/update")
+    assert bot.fake_updater.installed == [] and not bot.restart and "najnowsz" in bot.fake.texts()[-1]

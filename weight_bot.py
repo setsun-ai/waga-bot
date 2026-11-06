@@ -13,11 +13,13 @@ they go nowhere else and are never logged.
 import calendar
 import csv
 import errno
+import html
 import io
 import json
 import os
 import re
 import sqlite3
+import subprocess
 import sys
 import time
 import urllib.error
@@ -30,7 +32,8 @@ from zoneinfo import ZoneInfo
 
 from PIL import Image, ImageDraw, ImageFont
 
-VERSION = "1.1.0"
+VERSION = "1.2.0"
+REPO = "setsun-ai/weight-bot"
 TZ = ZoneInfo(os.environ.get("WEIGHT_TZ", "Europe/Warsaw"))
 
 MIN_KG, MAX_KG = 30, 300
@@ -451,6 +454,95 @@ class Telegram:
             raise TelegramError(f"download: {type(e).__name__}") from None
 
 
+# --- updating itself -------------------------------------------------------------------------------
+
+class UpdateError(Exception):
+    """Why an update can't go ahead, in words for the owner."""
+
+
+def version_tuple(text):
+    return tuple(int(part) for part in text.lstrip("v").split("."))
+
+
+def version_in(source):
+    match = re.search(rb'^VERSION = "(\d+\.\d+\.\d+)"', source, re.M)
+    return match[1].decode() if match else None
+
+
+def web_get(url):
+    request = urllib.request.Request(url, headers={"User-Agent": "weight-bot"})
+    try:
+        with urllib.request.urlopen(request, timeout=30) as response:
+            return response.read()
+    except urllib.error.HTTPError as e:
+        raise UpdateError(f"GitHub odpowiedział błędem {e.code}") from None
+    except OSError:
+        raise UpdateError("brak połączenia z GitHubem") from None
+
+
+class Updater:
+    """
+    The service's sandbox can't write to /opt, so a downloaded version lives next to the data: a copy that passed its
+    selftest, and the one before it for rollback. main() starts the copy when it is newer than the installed file.
+    """
+
+    def __init__(self, folder, fetch=web_get):
+        self.fetch = fetch
+        self.copy = Path(folder) / "weight_bot.py"
+        self.previous = Path(folder) / "weight_bot.py.bak"
+        self.new = Path(folder) / "weight_bot.py.new"
+
+    @property
+    def can_roll_back(self):
+        return self.copy.exists()
+
+    def latest(self):
+        try:
+            tag = json.loads(self.fetch(f"https://api.github.com/repos/{REPO}/releases/latest")).get("tag_name")
+        except ValueError:
+            raise UpdateError("dziwna odpowiedź GitHuba") from None
+        if not isinstance(tag, str) or not re.fullmatch(r"v\d+\.\d+\.\d+", tag):
+            raise UpdateError("dziwna odpowiedź GitHuba")
+        return tag
+
+    def install(self, tag):
+        """Only a file of the right version that passes its own selftest replaces what's there."""
+        source = self.fetch(f"https://raw.githubusercontent.com/{REPO}/{tag}/weight_bot.py")
+        if version_in(source) != tag[1:]:
+            raise UpdateError("pobrany plik ma inną wersję")
+        self.copy.parent.mkdir(parents=True, exist_ok=True)
+        self.new.write_bytes(source)
+        try:
+            check = subprocess.run([sys.executable, str(self.new), "--selftest"], capture_output=True, timeout=120)
+            if check.returncode != 0:
+                raise UpdateError("nowa wersja nie przeszła selftestu")
+            if self.copy.exists():
+                os.replace(self.copy, self.previous)
+            os.replace(self.new, self.copy)
+        except (OSError, subprocess.TimeoutExpired):
+            raise UpdateError("nie udało się sprawdzić nowej wersji") from None
+        finally:
+            self.new.unlink(missing_ok=True)
+
+    def rollback(self):
+        """One step back; with no earlier copy, back to the installed file."""
+        if not self.copy.exists():
+            raise UpdateError("nie ma wersji, do której można wrócić")
+        if self.previous.exists():
+            os.replace(self.previous, self.copy)
+        else:
+            self.copy.unlink()
+
+
+def newer_copy(copy):
+    """The downloaded copy if it is newer than this file; an older one (after a fresh install) is ignored."""
+    try:
+        version = version_in(Path(copy).read_bytes())
+    except OSError:
+        return None
+    return copy if version and version_tuple(version) > version_tuple(VERSION) else None
+
+
 def label_width(text):
     """Width of a button text in characters: emoji and symbols take two, variation selectors none."""
     return sum(0 if ch in "️‍" else 2 if ord(ch) >= 0x2300 else 1 for ch in text)
@@ -463,7 +555,8 @@ def keyboard(rows):
 MENU = keyboard([[("⚖️ Dodaj pomiar", "m:add"), ("📈 Wykres", "m:chart")],
                  [("📋 Ostatnie", "m:recent"), ("🎯 Cel", "m:goal")],
                  [("📏 Wzrost", "m:height"), ("⏰ Przypomnienie", "m:remind")],
-                 [("💾 Kopia CSV", "m:csv"), ("❓ Pomoc", "m:help")]])
+                 [("💾 Kopia CSV", "m:csv"), ("❓ Pomoc", "m:help")],
+                 [("🔄 Aktualizacja", "m:update")]])
 MENU_TEXT = "⚖️ <b>Menu</b>\nWyślij wagę, np. 82,4, albo wybierz kafelek."
 BACK = [("↩️ Menu", "m:menu")]
 MONTHS = ("Styczeń", "Luty", "Marzec", "Kwiecień", "Maj", "Czerwiec", "Lipiec", "Sierpień", "Wrzesień", "Październik",
@@ -476,7 +569,7 @@ HELP = ("⚖️ Wyślij wagę, np. <code>82,4</code>, a odeślę wykres.\n\n"
         "Drugi pomiar tego samego dnia zastępuje pierwszy; edycja wiadomości też poprawia pomiar.\n\n"
         "/wzrost 180 – do BMI\n/cel 78 – cel (/cel off wyłącza)\n"
         "/przypomnienie 8:00 – gdy nie ma pomiaru (off wyłącza)\n"
-        "/wykres · /ostatnie · /csv · /menu\nOdesłanie pliku CSV przywraca dane.\n\n"
+        "/wykres · /ostatnie · /csv · /menu · /update · /rollback\nOdesłanie pliku CSV przywraca dane.\n\n"
         "Waga waha się z dnia na dzień o 1–2 kg; ważniejsza jest średnia z 7 dni. "
         "BMI to ogólna skala dla dorosłych: nie odróżnia mięśni od tłuszczu.")
 PROMPTS = {"height": "📏 Podaj wzrost w cm, np. 180.", "goal": "🎯 Podaj cel w kg, np. 78 (off wyłącza).",
@@ -484,8 +577,9 @@ PROMPTS = {"height": "📏 Podaj wzrost w cm, np. 180.", "goal": "🎯 Podaj cel
 
 
 class Bot:
-    def __init__(self, store, api, owner, now=None):
-        self.store, self.api, self.owner = store, api, owner
+    def __init__(self, store, api, owner, updater, now=None):
+        self.store, self.api, self.owner, self.updater = store, api, owner, updater
+        self.restart = False  # a new version is in place: the main loop ends and systemd starts it
         self.now = now or (lambda: datetime.now(TZ))
         self.waiting = None  # the setting the next plain message is an answer for
         self.shown_range = {}  # message id -> the range its chart shows (no redraw of what's already there)
@@ -677,6 +771,74 @@ class Bot:
         self.day_choice = None
         self.api("deleteMessage", {"chat_id": self.owner, "message_id": message_id})
 
+    # --- updates -----------------------------------------------------------------------------------------
+
+    def tell(self, message, text, markup=None):
+        return self.show(message, text, markup) if message else self.say(text, markup)
+
+    def update_view(self):
+        rows, head = [], f"🔄 Wersja {VERSION}"
+        try:
+            latest = self.updater.latest()
+            if version_tuple(latest) > version_tuple(VERSION):
+                head += f", najnowsza to {latest[1:]}."
+                rows.append([(f"⬆️ Zainstaluj {latest[1:]}", f"up:{latest}")])
+            else:
+                head += " – to najnowsza."
+        except UpdateError as e:
+            head += f"\n⚠️ Nie udało się sprawdzić: {html.escape(str(e))}."
+        if self.updater.can_roll_back:
+            rows.append([("⏪ Wróć do poprzedniej", "rb")])
+        return head, keyboard(rows + [BACK])
+
+    def install_update(self, tag, message=None):
+        self.tell(message, f"⏳ Pobieram i sprawdzam {tag[1:]}…")
+        try:
+            self.updater.install(tag)
+        except UpdateError as e:
+            self.tell(message, f"⚠️ Aktualizacja się nie udała: {html.escape(str(e))}. Działa dalej {VERSION}.",
+                      keyboard([BACK]))
+            return
+        self.restarting(message)
+
+    def roll_back(self, message=None):
+        if not self.updater.can_roll_back:
+            self.tell(message, "Nie ma wersji, do której można wrócić.", keyboard([BACK]))
+            return
+        try:
+            self.updater.rollback()
+        except (UpdateError, OSError) as e:
+            self.tell(message, f"⚠️ Nie udało się wrócić: {html.escape(str(e))}.", keyboard([BACK]))
+            return
+        self.restarting(message)
+
+    def restarting(self, message):
+        self.store.set("updated_from", VERSION)
+        self.restart = True
+        self.tell(message, "♻️ Uruchamiam ponownie, za chwilę dam znać.")
+
+    def announce_update(self):
+        """The first thing after a restart caused by /update or /rollback."""
+        old = self.store.get("updated_from")
+        if old:
+            self.say(f"✅ Działa wersja {VERSION} (było {old}).")
+            self.store.set("updated_from", None)
+
+    def check_for_update(self, now):
+        """Once a day; each new version is announced once. No connection isn't worth a message."""
+        today = now.date().isoformat()
+        if self.store.get("update_checked") == today:
+            return
+        self.store.set("update_checked", today)
+        try:
+            latest = self.updater.latest()
+        except UpdateError:
+            return
+        if version_tuple(latest) > version_tuple(VERSION) and self.store.get("update_told") != latest:
+            self.say(f"🔄 Jest nowa wersja: {latest[1:]} (masz {VERSION}).",
+                     keyboard([[(f"⬆️ Zainstaluj {latest[1:]}", f"up:{latest}")]]))
+            self.store.set("update_told", latest)
+
     def latest_chart(self):
         points = self.store.points()
         if points:
@@ -761,6 +923,10 @@ class Bot:
             self.say(*self.recent_view())
         elif command == "csv":
             self.send_copy(self.now().date().strftime("💾 Kopia z %d.%m.%Y – odeślij ją, by przywrócić dane."))
+        elif command == "update":
+            self.update_command()
+        elif command == "rollback":
+            self.roll_back()
         elif command == "waga":
             self.handle_text(args, sent, False) if args else self.say(*self.picker_view())
         elif command in settings:
@@ -771,6 +937,17 @@ class Bot:
                 self.say(PROMPTS[settings[command]])
         else:
             self.say(HELP)
+
+    def update_command(self):
+        try:
+            latest = self.updater.latest()
+        except UpdateError as e:
+            self.say(f"⚠️ Nie udało się sprawdzić: {html.escape(str(e))}.")
+            return
+        if version_tuple(latest) > version_tuple(VERSION):
+            self.install_update(latest)
+        else:
+            self.say(f"✅ Wersja {VERSION} – to najnowsza.")
 
     def handle_tap(self, query):
         data, message = query.get("data", ""), query.get("message", {})
@@ -795,6 +972,10 @@ class Bot:
             day, tenths = rest.split(":")
             self.close_stepper(message_id)
             self.save(int(tenths) / 10, date.fromisoformat(day))
+        elif kind == "up":
+            self.install_update(rest, message)
+        elif kind == "rb":
+            self.roll_back(message)
         elif kind == "dx":
             day = date.fromisoformat(rest)
             self.store.delete(day)
@@ -841,6 +1022,8 @@ class Bot:
             self.handle_command("/csv", self.now().date())
         elif name == "help":
             self.show(message, HELP, keyboard([BACK]))
+        elif name == "update":
+            self.show(message, *self.update_view())
         elif name == "menu":
             self.show(message, MENU_TEXT, MENU)
         elif name in PROMPTS:
@@ -873,6 +1056,7 @@ class Bot:
         now = self.now()
         self.remind(now)
         self.weekly(now)
+        self.check_for_update(now)
 
     def remind(self, now):
         moment, today = self.store.get("remind"), now.date().isoformat()
@@ -912,9 +1096,13 @@ def whoami(api):
 
 
 def run(api, bot):
-    api("setMyCommands", {"commands": json.dumps([{"command": "menu", "description": "Menu z kafelkami"},
-                                                  {"command": "help", "description": "Jak to działa"}])})
     log(f"weight-bot {VERSION} started")
+    try:
+        api("setMyCommands", {"commands": json.dumps([{"command": "menu", "description": "Menu z kafelkami"},
+                                                      {"command": "help", "description": "Jak to działa"}])})
+        bot.announce_update()
+    except TelegramError as e:  # no connection yet: the loop below waits for it
+        log(f"start: {e}")
     offset, failures = None, 0
     while True:
         try:
@@ -940,6 +1128,12 @@ def run(api, bot):
                     bot.say("❌ Brak miejsca na dysku." if disk_full else f"❌ Coś nie wyszło ({type(e).__name__}).")
                 except Exception:
                     pass
+        if bot.restart:
+            try:  # confirm what was received, or the same /update would come back after the restart
+                api("getUpdates", {"offset": offset, "timeout": 0})
+            except TelegramError as e:
+                log(f"confirm: {e}")
+            sys.exit(0)  # Restart=always starts the new version
 
 
 def selftest():
@@ -972,10 +1166,14 @@ def main(argv):
     if not owner.isdigit():
         print("Brak TG_OWNER_ID (sprawdzisz go przez --whoami)", file=sys.stderr)
         return 2
+    db = Path(os.environ.get("WEIGHT_DB", "weight.db"))
+    updates = db.parent / "update"
+    if newer_copy(updates / "weight_bot.py"):
+        os.execv(sys.executable, [sys.executable, str(updates / "weight_bot.py")])
     os.umask(0o077)
-    store = Store(os.environ.get("WEIGHT_DB", "weight.db"))
+    store = Store(db)
     try:
-        run(api, Bot(store, api, int(owner)))
+        run(api, Bot(store, api, int(owner), Updater(updates)))
     except KeyboardInterrupt:
         return 0
 

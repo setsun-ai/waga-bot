@@ -22,6 +22,8 @@ if ! python3 "$DIR/weight_bot.py.new" --selftest; then
   exit 1
 fi
 mv "$DIR/weight_bot.py.new" "$DIR/weight_bot.py"
+# A version downloaded by the bot's update button: this install is what should run now, even if that copy is newer.
+rm -rf /var/lib/private/weight-bot/update
 install -m 644 "$SERVICE" /etc/systemd/system/weight-bot.service
 
 if [ ! -f "$ENV_FILE" ]; then

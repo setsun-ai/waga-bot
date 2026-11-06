@@ -40,7 +40,15 @@ git clone https://github.com/setsun-ai/weight-bot.git
 sudo bash weight-bot/deploy/install.sh
 ```
 
-Instalator pyta o token (nie pokazuje go na ekranie), rozpoznaje Twoje ID po wiadomości do bota i uruchamia usługę. Token trafia tylko do `/etc/weight-bot.env` (chmod 600). Aktualizacja to `git -C weight-bot pull` i ten sam instalator: dane i ustawienia zostają.
+Instalator pyta o token (nie pokazuje go na ekranie), rozpoznaje Twoje ID po wiadomości do bota i uruchamia usługę. Token trafia tylko do `/etc/weight-bot.env` (chmod 600). Dane i ustawienia zostają przy każdej aktualizacji.
+
+## Aktualizacja
+
+W bocie: `/menu` → **🔄 Aktualizacja** albo `/update`. Bot pobiera najnowsze wydanie z GitHuba, uruchamia jego selftest i dopiero wtedy się przełącza; gdy selftest nie przejdzie, działa dalej stara wersja. **⏪ Wróć do poprzedniej** albo `/rollback` cofa o krok. O nowej wersji bot pisze sam, raz. Pobrany plik nie ma osobnego podpisu: bot ufa temu, co jest w wydaniu tego repozytorium.
+
+Ręcznie, także gdy nowa wersja nie chce wystartować: `git -C weight-bot pull` i ten sam instalator.
+
+Jeden raz, do wersji 1.2.0, trzeba to zrobić ręcznie: wcześniejsze wersje nie mają przycisku.
 
 Usługa ma limit 50% CPU i 200 MB RAM oraz niski priorytet, żeby nie przeszkadzać innym programom na tej maszynie.
 
