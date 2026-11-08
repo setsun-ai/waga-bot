@@ -946,3 +946,89 @@ def test_version_compares_as_numbers_not_text():
 def test_typed_update_when_already_newest_installs_nothing(bot):
     text(bot, "/update")
     assert bot.fake_updater.installed == [] and not bot.restart and "najnowsz" in bot.fake.texts()[-1]
+
+
+# --- values written next to the points ---------------------------------------------------------
+
+def boxes_overlap(a, b):
+    return a[0] < b[2] and b[0] < a[2] and a[1] < b[3] and b[1] < a[3]
+
+
+def measure(text):
+    return len(text) * 10, 20
+
+
+def test_few_points_all_get_their_value():
+    spots = [(100 + i * 150, 400, f"8{i},0", False) for i in range(5)]
+    placed = weight_bot.place_labels(spots, measure, top=50, bottom=700)
+    assert sorted(text for text, _, _ in placed) == ["80,0", "81,0", "82,0", "83,0", "84,0"]
+
+
+def test_dense_points_never_overlap_and_keep_the_important_ones():
+    spots = [(100 + i * 9, 300 + (i % 7) * 15, f"{80 + i / 10:.1f}", i in (0, 59, 30)) for i in range(60)]
+    placed = weight_bot.place_labels(spots, measure, top=50, bottom=700)
+    boxes = [box for _, box, _ in placed]
+    assert all(not boxes_overlap(a, b) for i, a in enumerate(boxes) for b in boxes[i + 1:])
+    texts = [text for text, _, _ in placed]
+    assert {"80.0", "85.9", "83.0"} <= set(texts) and len(texts) < 60
+
+
+def test_a_label_near_the_top_goes_below_its_point():
+    (_, box, _), = weight_bot.place_labels([(300, 60, "82,4", True)], measure, top=50, bottom=700)
+    assert box[1] > 60 and box[1] >= 50
+
+
+def test_chart_writes_the_values_of_the_points():
+    points = [(TODAY - timedelta(days=d), 82.0 - d * 0.3) for d in range(4, -1, -1)]
+    with_values = picture(weight_bot.render_chart(points, 30, None, None, TODAY, TODAY))
+    original = weight_bot.place_labels
+    try:
+        weight_bot.place_labels = lambda *a, **k: []
+        without = picture(weight_bot.render_chart(points, 30, None, None, TODAY, TODAY))
+    finally:
+        weight_bot.place_labels = original
+    assert with_values.tobytes() != without.tobytes()
+
+
+def test_every_value_on_a_short_chart_only_the_key_ones_on_a_long_one():
+    short = [(TODAY - timedelta(days=d), 80 + d % 3) for d in range(13, -1, -1)]
+    assert len(weight_bot.label_candidates(short, TODAY)) == 14
+    long = [(TODAY - timedelta(days=d), 80 + (d % 5) / 10) for d in range(29, -1, -1)]
+    long[3] = (long[3][0], 75.0)
+    long[10] = (long[10][0], 90.0)
+    chosen = weight_bot.label_candidates(long, TODAY)
+    assert {kg for _, kg in chosen} >= {75.0, 90.0} and (TODAY, long[-1][1]) in chosen and len(chosen) <= 4
+
+
+def test_labels_keep_off_the_dots_and_inside_the_chart():
+    dots = [(300, 400, 400, 420)]  # a dot right above the point
+    (_, box, _), = weight_bot.place_labels([(350, 430, "82,4", False)], measure, top=50, bottom=700, obstacles=dots,
+                                        left=0, right=1000)
+    assert box[1] > 430  # went below
+    (_, box, _), = weight_bot.place_labels([(5, 400, "82,4", True)], measure, top=50, bottom=700, left=0, right=1000)
+    assert box[0] >= 0
+
+
+def test_the_value_of_the_charts_day_is_written_in_its_colour_even_at_the_edge():
+    points = [(TODAY - timedelta(days=d), 82.0 + d / 10) for d in range(4, -1, -1)]  # today is at the right edge
+    image = picture(weight_bot.render_chart(points, 30, None, None, TODAY, TODAY))
+    header_cut = image.crop((0, 90, weight_bot.WIDTH, 600))  # below the headline, above the legend
+    reds = sum(n for n, c in header_cut.getcolors(1 << 24) if c[0] > 180 and c[1] < 90 and c[2] < 90)
+    dot = 3.1416 * 12 * 12
+    assert reds > dot * 1.3  # the red dot alone isn't enough: its value is red too
+
+
+def test_where_two_values_compete_the_newer_wins_and_a_key_value_beats_both():
+    crowded = [(100, 400, "80,0", False), (104, 400, "81,0", False)]
+    assert [t for t, _, _ in weight_bot.place_labels(crowded, measure, top=50, bottom=700)] == ["81,0", "80,0"]
+    with_key = [(100, 400, "79,0", True), (104, 400, "80,0", False), (108, 400, "81,0", False)]
+    first = weight_bot.place_labels(with_key, measure, top=50, bottom=700)[0][0]
+    assert first == "79,0"
+
+
+def test_a_key_value_is_written_even_when_dots_crowd_it():
+    dots = [(320, 360, 380, 400), (320, 440, 380, 470)]  # dots both above and below the point
+    placed = weight_bot.place_labels([(350, 420, "82,4", True)], measure, top=50, bottom=700, obstacles=dots)
+    assert [t for t, _, _ in placed] == ["82,4"]
+    plain = weight_bot.place_labels([(350, 420, "82,4", False)], measure, top=50, bottom=700, obstacles=dots)
+    assert plain == []

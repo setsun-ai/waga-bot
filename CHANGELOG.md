@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.3.0 (2026-11)
+
+- **Wartości przy punktach wykresu.** Do 16 pomiarów (np. widok 14 dni) każdy ma podpisaną wagę; na dłuższym wykresie tylko dzień, którego dotyczy wykres (na czerwono), najniższy i najwyższy. Podpisy nie nachodzą na siebie ani na punkty i nie wychodzą poza wykres.
+
 ## 1.2.0 (2026-11)
 
 - **🔄 Aktualizacja w menu** (także `/update` i `/rollback`): bot pokazuje swoją wersję i najnowszą, pobiera nową, sprawdza ją selftestem, uruchamia się ponownie i daje znać. Gdy selftest nie przejdzie, działa dalej stara wersja. Przycisk **⏪ Wróć do poprzedniej** cofa o krok.

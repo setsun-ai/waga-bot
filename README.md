@@ -11,7 +11,7 @@ Jeden plik (`weight_bot.py`), biblioteka standardowa + Pillow. Odpowiada tylko w
 - **📋 Ostatnie** – lista pomiarów; stuknięcie otwiera poprawianie i usuwanie.
 - Drugi pomiar tego samego dnia zastępuje pierwszy. Edycja wiadomości też poprawia pomiar.
 - Duży skok (literówka?) bot najpierw potwierdza przyciskiem.
-- Pod wykresem: zakres (14 d, 30 d, 90 d, rok, całość) i usunięcie pomiaru.
+- Pod wykresem: zakres (14 d, 30 d, 90 d, rok, całość) i usunięcie pomiaru. Przy krótkim zakresie każdy punkt ma podpisaną wagę, przy dłuższym – dzisiejszy, najniższy i najwyższy.
 - `/menu` – wszystko jako kafelki, otwierają się w miejscu z ↩️ Menu. Komendy dalej działają: `/wzrost 180`, `/cel 78`, `/przypomnienie 8:00` (`off` wyłącza), `/wykres`, `/ostatnie`, `/csv`, `/waga`, `/help`.
 
 W niedzielę wieczorem bot wysyła podsumowanie tygodnia z kopią danych w CSV. Odesłanie tego pliku przywraca dane.

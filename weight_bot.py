@@ -32,7 +32,7 @@ from zoneinfo import ZoneInfo
 
 from PIL import Image, ImageDraw, ImageFont
 
-VERSION = "1.2.0"
+VERSION = "1.3.0"
 REPO = "setsun-ai/weight-bot"
 TZ = ZoneInfo(os.environ.get("WEIGHT_TZ", "Europe/Warsaw"))
 
@@ -310,6 +310,47 @@ def value_scale(values, goal):
     return low, high
 
 
+LABEL_ALL_UP_TO = 16  # more points than this: only the chart's day, the lowest and the highest get their value
+
+
+def label_candidates(shown, highlight):
+    """The measurements that get their value written: all on a short chart, the key ones on a long one."""
+    if len(shown) <= LABEL_ALL_UP_TO:
+        return list(shown)
+    lowest, highest = min(shown, key=lambda p: p[1]), max(shown, key=lambda p: p[1])
+    return [p for p in shown if p[0] == highlight or p in (lowest, highest)]
+
+
+def place_labels(spots, measure, top, bottom, gap=14 * SCALE, obstacles=(), left=None, right=None):
+    """
+    Which values fit next to their points, as [(text, box, index of the spot)]: the important ones first, then the
+    newest. Above the
+    point, or below it when there's no room; never on another value or on a dot; kept inside left..right.
+    """
+    order = sorted(range(len(spots)), key=lambda i: (not spots[i][3], -i))
+    placed = []
+
+    def hits(box, others):
+        return any(box[0] < o[2] and o[0] < box[2] and box[1] < o[3] and o[1] < box[3] for o in others)
+
+    for i in order:
+        x, y, text, important = spots[i]
+        width, tall = measure(text)
+        if left is not None:
+            x = max(x, left + width / 2)
+        if right is not None:
+            x = min(x, right - width / 2)
+        candidates = [(x - width / 2, y0, x + width / 2, y0 + tall) for y0 in (y - gap - tall, y + gap)]
+        inside = [b for b in candidates if b[1] >= top and b[3] <= bottom]
+        labels = [b for _, b, _ in placed]
+        free = [b for b in inside if not hits(b, labels) and not hits(b, obstacles)]
+        if not free and important:  # the key values are written even if they touch a dot
+            free = [b for b in inside if not hits(b, labels)]
+        if free:
+            placed.append((text, free[0], i))
+    return placed
+
+
 def render_chart(points, days, height, goal, highlight, today):
     """PNG of the chart: measurements, the 7-day mean, the goal, and below them the BMI bar with today's place on it."""
     image = Image.new("RGB", (WIDTH * SCALE, HEIGHT * SCALE), (255, 255, 255))
@@ -368,6 +409,20 @@ def render_chart(points, days, height, goal, highlight, today):
         if d == highlight:
             mark = 12 * s
             draw.ellipse([x(d) - mark, y(kg) - mark, x(d) + mark, y(kg) + mark], fill=HIGHLIGHT)
+
+    small = font(19)
+    chosen = label_candidates(shown, highlight)
+    spots = [(x(d), y(kg), num(kg), d == highlight or len(chosen) < len(shown)) for d, kg in chosen]
+    dots = [(x(d) - dot, y(kg) - dot, x(d) + dot, y(kg) + dot) for d, kg in shown if (d, kg) not in chosen]
+
+    def measure(text):
+        box = small.getbbox(text)
+        return box[2] - box[0], box[3] - box[1]
+
+    for text, box, i in place_labels(spots, measure, top, bottom, obstacles=dots, left=left, right=right):
+        mine = chosen[i][0] == highlight
+        draw.text(((box[0] + box[2]) / 2, box[1]), text, font=font(19, True) if mine else small,
+                  fill=HIGHLIGHT if mine else MUTED, anchor="mt")
 
     legend = bottom + 64 * s
     draw.line([(left, legend), (left + 44 * s, legend)], fill=TREND, width=6 * s)
